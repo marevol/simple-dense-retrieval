@@ -59,13 +59,19 @@ def train_dense_retrieval(
 
             # Move data to device (query, positive, negative)
             queries = batch["query"]
-            positive_docs = batch["positive_doc"]
-            negative_docs = batch["negative_doc"]
+            positive_titles = batch["positive_title"]
+            negative_titles = batch["negative_title"]
+
+            # Get one-hot encoded brand and color data
+            positive_brands = batch["positive_brand"]
+            positive_colors = batch["positive_color"]
+            negative_brands = batch["negative_brand"]
+            negative_colors = batch["negative_color"]
 
             # Generate embeddings for queries and documents
             query_embeddings = query_encoder(queries)
-            positive_embeddings = document_encoder(positive_docs)
-            negative_embeddings = document_encoder(negative_docs)
+            positive_embeddings = document_encoder(positive_titles, positive_brands, positive_colors)
+            negative_embeddings = document_encoder(negative_titles, negative_brands, negative_colors)
 
             # Compute the contrastive loss
             loss, _, _ = contrastive_loss(query_embeddings, positive_embeddings, negative_embeddings)

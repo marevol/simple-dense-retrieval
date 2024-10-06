@@ -31,13 +31,19 @@ def evaluate_dense_retrieval(query_encoder, document_encoder, dataloader, device
         for batch_idx, batch in enumerate(dataloader):
             # Get query and document data
             queries = batch["query"]
-            positive_docs = batch["positive_doc"]
-            negative_docs = batch["negative_doc"]
+            positive_titles = batch["positive_title"]
+            negative_titles = batch["negative_title"]
+
+            # Get one-hot encoded brand and color data
+            positive_brands = batch["positive_brand"]
+            positive_colors = batch["positive_color"]
+            negative_brands = batch["negative_brand"]
+            negative_colors = batch["negative_color"]
 
             # Generate embeddings
             query_embeddings = query_encoder(queries)
-            positive_embeddings = document_encoder(positive_docs)
-            negative_embeddings = document_encoder(negative_docs)
+            positive_embeddings = document_encoder(positive_titles, positive_brands, positive_colors)
+            negative_embeddings = document_encoder(negative_titles, negative_brands, negative_colors)
 
             # Calculate loss
             loss, pos_sim, neg_sim = contrastive_loss(query_embeddings, positive_embeddings, negative_embeddings)

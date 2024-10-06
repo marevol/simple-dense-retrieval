@@ -1,11 +1,13 @@
 import logging
 import os
+import pickle
 
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModel, AutoTokenizer
 
+from simple_dense_retrieval.encoder import LabelEncoder
 from simple_dense_retrieval.evaluate import evaluate_dense_retrieval
 from simple_dense_retrieval.model import DocumentEncoder, QueryEncoder
 from simple_dense_retrieval.train import train_dense_retrieval
@@ -39,6 +41,33 @@ def drop_insufficient_data(df):
     return pd.merge(id_df[["query_id"]], df, how="left", on="query_id")
 
 
+def create_encoder(df, column_name, min_frequency=10):
+    """
+    Create an LabelEncoder for a specific column in the DataFrame.
+    Categories with a frequency less than min_frequency will be considered infrequent and grouped together.
+    Unknown values during transformation will be encoded as -1.
+    Rows with NaN values in the specified column will be dropped.
+
+    Args:
+        df (DataFrame): The DataFrame containing the data.
+        column_name (str): The name of the column to encode.
+        min_frequency (int): The minimum frequency for a category to be treated as known.
+
+    Returns:
+        LabelEncoder: The fitted LabelEncoder.
+    """
+    # Drop rows with NaN in the specified column
+    df_dropped = df[[column_name]].dropna()
+
+    # Create LabelEncoder with min_frequency and unknown values set to 0
+    encoder = LabelEncoder(min_frequency=min_frequency)
+
+    # Fit the encoder on the column without NaN values
+    encoder.fit(df_dropped[column_name].values)
+
+    return encoder
+
+
 def load_data():
     """
     Load and preprocess the dataset.
@@ -54,10 +83,10 @@ def load_data():
     # Merge datasets and create a column for positive/negative label (1 for positive, 0 for negative)
     df = pd.merge(
         example_df[["example_id", "query_id", "product_id", "query", "esci_label", "split"]],
-        product_df[["product_id", "product_title"]],
+        product_df[["product_id", "product_title", "product_brand", "product_color"]],
         how="left",
         on="product_id",
-    )[["example_id", "query_id", "query", "product_title", "esci_label", "split"]]
+    )[["example_id", "query_id", "query", "product_title", "product_brand", "product_color", "esci_label", "split"]]
 
     # Label exact matches as positive (1), everything else as negative (0)
     df["exact"] = df.esci_label.apply(lambda x: 1 if x == "E" else 0)
@@ -87,18 +116,32 @@ class QueryDocumentDataset(Dataset):
         query_id = self.df.loc[idx, "query_id"]
         exact = self.df.loc[idx, "exact"]
         if exact == 1:
-            positive_doc = self.df.loc[idx, "product_title"]  # Positive document
+            positive_title = self.df.loc[idx, "product_title"]  # Positive document
+            positive_brand = self.df.loc[idx, "product_brand"]
+            positive_color = self.df.loc[idx, "product_color"]
             neg_df = self.df[(self.df["query_id"] == query_id) & (self.df["exact"] == 0)]
-            negative_doc = neg_df.sample(1).iloc[0]["product_title"]  # Random negative document
+            negative_doc = neg_df.sample(1)  # Random negative document
+            negative_title = negative_doc.iloc[0]["product_title"]
+            negative_brand = negative_doc.iloc[0]["product_brand"]
+            negative_color = negative_doc.iloc[0]["product_color"]
         else:
             pos_df = self.df[(self.df["query_id"] == query_id) & (self.df["exact"] == 1)]
-            positive_doc = pos_df.sample(1).iloc[0]["product_title"]  # Random positive document
-            negative_doc = self.df.loc[idx, "product_title"]  # Negative document
+            positive_doc = pos_df.sample(1)  # Random positive document
+            positive_title = positive_doc.iloc[0]["product_title"]
+            positive_brand = positive_doc.iloc[0]["product_brand"]
+            positive_color = positive_doc.iloc[0]["product_color"]
+            negative_title = self.df.loc[idx, "product_title"]  # Negative document
+            negative_brand = self.df.loc[idx, "product_brand"]
+            negative_color = self.df.loc[idx, "product_color"]
 
         return {
             "query": query,
-            "positive_doc": positive_doc,
-            "negative_doc": negative_doc,
+            "positive_title": positive_title,
+            "positive_brand": positive_brand if positive_brand is not None else "",
+            "positive_color": positive_color if positive_color is not None else "",
+            "negative_title": negative_title,
+            "negative_brand": negative_brand if negative_brand is not None else "",
+            "negative_color": negative_color if negative_color is not None else "",
         }
 
 
@@ -124,12 +167,15 @@ def get_query_encoder(model_name, device="cpu"):
     return QueryEncoder(model=model, tokenizer=tokenizer).to(device)
 
 
-def get_document_encoder(model_name, device="cpu"):
+def get_document_encoder(model_name, brand_encoder=None, color_encoder=None, device="cpu"):
     """
     Get the document encoder model.
 
     Args:
         model_name (str): Pretrained model name.
+        brand_encoder (LabelEncoder): Optional pre-trained brand encoder.
+        color_encoder (LabelEncoder): Optional pre-trained color encoder.
+        device (str): The device to load the model on.
 
     Returns:
         DocumentEncoder: Document encoder model.
@@ -137,13 +183,23 @@ def get_document_encoder(model_name, device="cpu"):
     if model_name is not None and os.path.exists(model_name):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModel.from_pretrained(model_name).to(device)
-        encoder = DocumentEncoder(model=model, tokenizer=tokenizer)
+        brand_encoder_path = os.path.join(model_name, "brand_encoder.pkl")
+        with open(brand_encoder_path, "rb") as f:
+            brand_encoder = pickle.load(f)
+        color_encoder_path = os.path.join(model_name, "color_encoder.pkl")
+        with open(color_encoder_path, "rb") as f:
+            color_encoder = pickle.load(f)
+        encoder = DocumentEncoder(
+            model=model, tokenizer=tokenizer, brand_encoder=brand_encoder, color_encoder=color_encoder
+        )
         encoder.load_state_dict(torch.load(os.path.join(model_name, "encoder.pth"), map_location=device))
         return encoder.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name).to(device)
-    return DocumentEncoder(model=model, tokenizer=tokenizer).to(device)
+    return DocumentEncoder(
+        model=model, tokenizer=tokenizer, brand_encoder=brand_encoder, color_encoder=color_encoder
+    ).to(device)
 
 
 def save_models(query_encoder, document_encoder, optimizer, save_directory):
@@ -170,6 +226,12 @@ def save_models(query_encoder, document_encoder, optimizer, save_directory):
 
     document_encoder.model.save_pretrained(document_encoder_path)
     document_encoder.tokenizer.save_pretrained(document_encoder_path)
+    brand_encoder_path = os.path.join(document_encoder_path, "brand_encoder.pkl")
+    with open(brand_encoder_path, "wb") as f:
+        pickle.dump(document_encoder.brand_encoder, f)
+    color_encoder_path = os.path.join(document_encoder_path, "color_encoder.pkl")
+    with open(color_encoder_path, "wb") as f:
+        pickle.dump(document_encoder.color_encoder, f)
     torch.save(document_encoder.state_dict(), os.path.join(document_encoder_path, "encoder.pth"))
 
     optimizer_path = os.path.join(save_directory, "optimizer.pt")
@@ -189,9 +251,18 @@ def train(logger, train_df, model_name="intfloat/multilingual-e5-small", save_di
     Returns:
         None
     """
+    logger.info("Initializing encoders...")
+    # Create encoders for brand and color
+    brand_encoder = create_encoder(train_df, "product_brand", min_frequency=100)
+    logger.info(f"Brand features: {len(brand_encoder)}")
+    color_encoder = create_encoder(train_df, "product_color", min_frequency=100)
+    logger.info(f"Color features: {len(color_encoder)}")
+
     logger.info("Initializing tokenizer and models...")
     query_encoder = get_query_encoder(model_name=model_name, device=device)
-    document_encoder = get_document_encoder(model_name=model_name, device=device)
+    document_encoder = get_document_encoder(
+        model_name=model_name, brand_encoder=brand_encoder, color_encoder=color_encoder, device=device
+    )
 
     logger.info("Preparing dataset and dataloader...")
     train_dataset = QueryDocumentDataset(train_df)
@@ -205,7 +276,7 @@ def train(logger, train_df, model_name="intfloat/multilingual-e5-small", save_di
         document_encoder,
         train_loader,
         optimizer,
-        num_epochs=3,
+        num_epochs=5,
         device=device,
     )
 
