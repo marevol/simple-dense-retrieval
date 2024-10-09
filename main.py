@@ -134,12 +134,15 @@ class QueryDocumentDataset(Dataset):
             negative_brand = self.df.loc[idx, "product_brand"]
             negative_color = self.df.loc[idx, "product_color"]
 
+        # Each input text should start with "query: " or "passage: ", even for non-English texts.
+        # For tasks other than retrieval, you can simply use the "query: " prefix.
+        # https://huggingface.co/intfloat/multilingual-e5-small
         return {
-            "query": query,
-            "positive_title": positive_title,
+            "query": f"query: {query}",
+            "positive_title": f"passage: {positive_title}",
             "positive_brand": positive_brand if positive_brand is not None else "",
             "positive_color": positive_color if positive_color is not None else "",
-            "negative_title": negative_title,
+            "negative_title": f"passage: {negative_title}",
             "negative_brand": negative_brand if negative_brand is not None else "",
             "negative_color": negative_color if negative_color is not None else "",
         }
