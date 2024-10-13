@@ -279,7 +279,7 @@ def train(logger, train_df, model_name="intfloat/multilingual-e5-small", save_di
         document_encoder,
         train_loader,
         optimizer,
-        num_epochs=5,
+        num_epochs=3,
         device=device,
     )
 

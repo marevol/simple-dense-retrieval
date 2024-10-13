@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 
 class QueryEncoder(torch.nn.Module):
@@ -51,10 +52,12 @@ class DocumentEncoder(torch.nn.Module):
         self.brand_embedding = torch.nn.Embedding(len(brand_encoder), brand_embedding_dim, padding_idx=0)
         self.color_embedding = torch.nn.Embedding(len(color_encoder), color_embedding_dim, padding_idx=0)
 
-        # Combine brand, color, and document embeddings
-        self.fc = torch.nn.Linear(
-            self.hidden_size + brand_embedding_dim + color_embedding_dim, output_dim
-        )  # Output size can be adjusted
+        # Linear layers for projecting attributes and title
+        self.title_proj = torch.nn.Linear(self.hidden_size, output_dim)
+        self.attr_proj = torch.nn.Linear(brand_embedding_dim + color_embedding_dim, output_dim)
+
+        # Final output layer
+        self.fc = torch.nn.Linear(output_dim * 2, output_dim)
 
     def forward(self, document_texts, product_brands, product_colors):
         device = self.model.device
@@ -70,22 +73,27 @@ class DocumentEncoder(torch.nn.Module):
         input_ids = encoded_inputs["input_ids"].to(device)
         attention_mask = encoded_inputs["attention_mask"].to(device)
 
-        # Generate document embeddings
+        # Generate document (title) embeddings
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
         document_embeddings = outputs.last_hidden_state[:, 0, :]  # CLS token embeddings
 
-        # Label encode brands and colors before embedding
+        # Encode brands and colors
         brand_ids = self.brand_encoder.transform(product_brands)
         encoded_brands = torch.tensor(brand_ids).to(device)
         color_ids = self.color_encoder.transform(product_colors)
         encoded_colors = torch.tensor(color_ids).to(device)
 
-        # Pass label encoded brands and colors through their respective embeddings
+        # Pass through embedding layers for brand and color
         brand_embeddings = self.brand_embedding(encoded_brands)
         color_embeddings = self.color_embedding(encoded_colors)
+        attr_embeddings = torch.cat([brand_embeddings, color_embeddings], dim=1)
 
-        # Concatenate document embeddings with brand and color embeddings
-        combined_embeddings = torch.cat([document_embeddings, brand_embeddings, color_embeddings], dim=1)
+        # Project attributes and title
+        attr_proj = self.attr_proj(attr_embeddings)
+        title_proj = self.title_proj(document_embeddings)
+
+        # Concatenate title and attribute projections
+        combined_embeddings = torch.cat([title_proj, attr_proj], dim=1)
 
         # Final projection
         final_embeddings = self.fc(combined_embeddings)
